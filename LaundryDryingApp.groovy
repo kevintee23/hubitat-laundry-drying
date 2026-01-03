@@ -364,7 +364,8 @@ private Map fetchOpenMeteo() {
       BigDecimal rainRate = c.precipitation as BigDecimal
 
       BigDecimal cloud = c.cloud_cover as BigDecimal
-      BigDecimal sun = Math.max(0, Math.min(1, 1 - (cloud / 100)))
+      BigDecimal sunRaw = 1.0 - (cloud / 100.0)
+      BigDecimal sun = (sunRaw < 0.0) ? 0.0 : ((sunRaw > 1.0) ? 1.0 : sunRaw)
       BigDecimal lux = sun * 60000
 
       result = [ok: true, temp: temp, rh: rh, dewPoint: dewPoint, windMs: windMs, rainRate: rainRate, lux: lux]
