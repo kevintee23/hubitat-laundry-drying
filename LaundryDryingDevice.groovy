@@ -17,6 +17,7 @@ metadata {
   definition(name: "Laundry Drying Progress Device", namespace: "kevintee", author: "Kevin Tee") {
     capability "Switch"
     capability "SwitchLevel"
+    capability "Actuator"
     capability "Sensor"
     capability "Refresh"
     capability "RelativeHumidityMeasurement"
