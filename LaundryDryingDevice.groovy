@@ -149,6 +149,11 @@ def on() { startNow() }
 def off() { pauseNow() }
 
 def startNow() {
+  // Reset level to 0 for a fresh start
+  sendEvent(name: "level", value: 0)
+  sendEvent(name: "progress", value: "0% dry")
+  syncWetness()
+
   state.rateEma = 0.0
   state.startedAtMs = now()
 
