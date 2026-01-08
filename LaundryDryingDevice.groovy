@@ -1,5 +1,5 @@
 /**
- * Laundry Drying Progress Device v7.3
+ * Laundry Drying Progress Device v7.4
  *
  * Virtual device created and managed by the Laundry Drying Progress App.
  * Do not install this device manually - use the app instead.
@@ -9,6 +9,7 @@
  * - Drying location affects sun/wind benefit
  * - Optional custom lat/long for Open-Meteo fallback
  * - User-friendly dashboard attributes
+ * - Learning: "Mark Dry" button learns from actual drying times to improve predictions
  */
 
 import groovy.transform.Field
@@ -42,9 +43,15 @@ metadata {
     attribute "conditions", "string"         // "25°C, 52% RH, light breeze"
     attribute "startedAt", "string"          // "1:15 PM"
 
+    // Learning/calibration attributes
+    attribute "calibrationFactor", "number"  // Current calibration multiplier (1.0 = no adjustment)
+    attribute "learningStatus", "string"     // "Learning (3 sessions)" or "Calibrated"
+
     command "reset"
     command "startNow"
     command "pauseNow"
+    command "markDry"         // User presses when laundry is actually dry
+    command "resetCalibration"  // Reset learning data to start fresh
   }
 
   preferences {
@@ -108,6 +115,11 @@ def initialize() {
   if (state.startedAtMs == null) state.startedAtMs = 0L
   if (state.settings == null) state.settings = [dryingSpeed: "Normal", dryingLocation: "direct_sun", updateMinutes: 5, enableDebug: false]
 
+  // Learning/calibration state (persists across sessions)
+  if (state.calibrationFactor == null) state.calibrationFactor = 1.0
+  if (state.sessionCount == null) state.sessionCount = 0
+  state.initialEtaMinutes = null  // Reset each session
+
   sendEvent(name: "switch", value: "off")
   sendEvent(name: "status", value: "Ready")
   sendEvent(name: "reason", value: "—")
@@ -119,6 +131,9 @@ def initialize() {
   sendEvent(name: "timeElapsed", value: "—")
   sendEvent(name: "conditions", value: "—")
   sendEvent(name: "startedAt", value: "—")
+
+  // Update learning/calibration display
+  updateLearningDisplay()
 }
 
 // Called by parent app to get custom location settings
@@ -157,6 +172,7 @@ def startNow() {
 
   state.rateEma = 0.0
   state.startedAtMs = now()
+  state.initialEtaMinutes = null  // Will be captured on first tick
 
   sendEvent(name: "switch", value: "on")
   sendEvent(name: "status", value: "Drying")
@@ -173,6 +189,63 @@ def pauseNow() {
   sendEvent(name: "reason", value: "—")
   sendEvent(name: "etaDisplay", value: "Paused")
   sendEvent(name: "estimatedDoneTime", value: "—")
+}
+
+def markDry() {
+  // User indicates laundry is actually dry - use this to calibrate future predictions
+  if (device.currentValue("switch") != "on") {
+    log.warn "markDry called but drying is not active"
+    return
+  }
+
+  long startMs = (state.startedAtMs ?: 0L) as long
+  if (startMs <= 0L) {
+    log.warn "markDry called but no start time recorded"
+    finishDone()
+    return
+  }
+
+  // Calculate actual elapsed time in minutes
+  long elapsedMs = now() - startMs
+  BigDecimal actualMinutes = (elapsedMs / 60000.0) as BigDecimal
+
+  // Get the initial predicted ETA (captured on first tick)
+  BigDecimal predictedMinutes = (state.initialEtaMinutes ?: 0) as BigDecimal
+
+  if (predictedMinutes > 0 && actualMinutes > 5) {
+    // Calculate this session's calibration factor
+    // If actual > predicted, factor > 1 (predictions were too optimistic)
+    // If actual < predicted, factor < 1 (predictions were too pessimistic)
+    BigDecimal thisSessionFactor = actualMinutes / predictedMinutes
+
+    // Clamp to reasonable range (0.33x to 3.0x)
+    thisSessionFactor = clamp(thisSessionFactor, 0.33, 3.0)
+
+    // Update calibration using exponential moving average
+    // 30% weight on new data = gradual learning
+    BigDecimal oldCal = (state.calibrationFactor ?: 1.0) as BigDecimal
+    BigDecimal newCal = (oldCal * 0.7) + (thisSessionFactor * 0.3)
+    newCal = clamp(newCal, 0.33, 3.0)
+
+    state.calibrationFactor = newCal
+    state.sessionCount = ((state.sessionCount ?: 0) as Integer) + 1
+
+    log.info "Learning: actual=${actualMinutes.setScale(0, BigDecimal.ROUND_HALF_UP)}min, predicted=${predictedMinutes.setScale(0, BigDecimal.ROUND_HALF_UP)}min, factor=${thisSessionFactor.setScale(2, BigDecimal.ROUND_HALF_UP)}, newCal=${newCal.setScale(2, BigDecimal.ROUND_HALF_UP)}, sessions=${state.sessionCount}"
+
+    updateLearningDisplay()
+  } else {
+    log.info "markDry: skipping calibration (predicted=${predictedMinutes}, actual=${actualMinutes})"
+  }
+
+  // Finish the drying session
+  finishDone()
+}
+
+def resetCalibration() {
+  log.info "Resetting calibration data"
+  state.calibrationFactor = 1.0
+  state.sessionCount = 0
+  updateLearningDisplay()
 }
 
 def reset() {
@@ -196,6 +269,10 @@ def reset() {
   state.rateEma = 0.0
   state.lastSuccessMs = 0L
   state.startedAtMs = 0L
+  state.initialEtaMinutes = null  // Reset session ETA, but keep calibration
+
+  // Refresh learning display (calibration persists across resets)
+  updateLearningDisplay()
 }
 
 def refresh() { tick() }
@@ -277,10 +354,21 @@ def tick() {
   sendEvent(name: "progress", value: "${newLvl}% dry")
   syncWetness()
 
-  // Calculate and display ETA
-  Integer eta = (rateEma > 0.0001)
+  // Calculate raw ETA (before calibration)
+  Integer rawEta = (rateEma > 0.0001)
     ? (Math.ceil(((100 - newLvl) / 100.0) / rateEma * 60.0) as Integer)
     : 9999
+
+  // Capture initial ETA prediction on first tick (for learning comparison)
+  if (state.initialEtaMinutes == null && rawEta < 9999 && newLvl < 10) {
+    state.initialEtaMinutes = rawEta
+    if (state.settings?.enableDebug) log.debug "Captured initial ETA: ${rawEta} minutes"
+  }
+
+  // Apply calibration factor to ETA
+  BigDecimal calFactor = (state.calibrationFactor ?: 1.0) as BigDecimal
+  Integer eta = (rawEta < 9999) ? (Math.ceil(rawEta * calFactor) as Integer) : 9999
+
   sendEvent(name: "etaMinutes", value: eta)
   sendEvent(name: "etaDisplay", value: formatDuration(eta))
 
@@ -360,6 +448,26 @@ private void updateTimeElapsed() {
   long elapsedMs = now() - startMs
   Integer elapsedMins = (elapsedMs / 60000L) as Integer
   sendEvent(name: "timeElapsed", value: formatDuration(elapsedMins))
+}
+
+private void updateLearningDisplay() {
+  BigDecimal calFactor = (state.calibrationFactor ?: 1.0) as BigDecimal
+  Integer sessions = (state.sessionCount ?: 0) as Integer
+
+  // Display calibration factor (e.g., "1.15x" or "0.85x")
+  String calDisplay = calFactor.setScale(2, BigDecimal.ROUND_HALF_UP).toString() + "x"
+  sendEvent(name: "calibrationFactor", value: calFactor.setScale(2, BigDecimal.ROUND_HALF_UP))
+
+  // Display learning status
+  String status
+  if (sessions == 0) {
+    status = "Not calibrated"
+  } else if (sessions < 5) {
+    status = "Learning (${sessions} session${sessions == 1 ? '' : 's'})"
+  } else {
+    status = "Calibrated (${sessions} sessions)"
+  }
+  sendEvent(name: "learningStatus", value: status)
 }
 
 private String formatDuration(Integer totalMinutes) {

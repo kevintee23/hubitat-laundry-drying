@@ -5,6 +5,7 @@ A smart laundry drying tracker for [Hubitat Elevation](https://hubitat.com/) tha
 ## Features
 
 - **Real-time drying estimation** - Tracks drying progress based on temperature, humidity, wind, and sunlight
+- **Learning calibration** - "Mark Dry" button learns from your actual drying times to improve future predictions
 - **Multiple data sources** - Use your own weather sensors or automatic Open-Meteo weather data
 - **Dew point intelligence** - Uses dew point depression for more accurate predictions than humidity alone
 - **Location-aware** - Adjusts calculations based on whether laundry is in direct sun, shade, or indoors
@@ -119,10 +120,22 @@ The device will automatically:
 
 ### When Done
 
+**Option 1: Mark as Dry (Recommended)**
+
+When your laundry is actually dry, press **Mark Dry**:
+1. Go to the device page and click **markDry**
+2. Or add a "Mark Dry" button to your dashboard
+
+This teaches the system your actual drying time, improving future predictions. After a few sessions, ETAs will be calibrated to your specific setup.
+
+**Option 2: Wait for Auto-Complete**
+
 The device will automatically:
 - Set progress to 100%
 - Turn itself off
 - Show "Done" status
+
+> **Tip:** Using "Mark Dry" is better because it helps the system learn. Auto-complete just estimates based on weather conditions.
 
 ### Resetting for New Load
 
@@ -154,6 +167,8 @@ These attributes are available for your Hubitat dashboard tiles:
 | `status` | "Fast drying" | Current drying status |
 | `reason` | "Good conditions" | Explanation for status |
 | `dryingLocation` | "Direct sun" | Where laundry is drying |
+| `learningStatus` | "Calibrated (5 sessions)" | Learning progress |
+| `calibrationFactor` | 1.15 | Calibration multiplier (1.0 = no adjustment) |
 
 ### Technical (For Advanced Users)
 
@@ -254,6 +269,42 @@ In the Laundry Drying app settings, select your Ecowitt Virtual Sensor for:
 
 ---
 
+## Learning & Calibration
+
+The app learns from your feedback to improve predictions over time.
+
+### How It Works
+
+1. When drying starts, the system records its initial ETA prediction
+2. When you press **Mark Dry**, it records the actual elapsed time
+3. It calculates: `calibrationFactor = actualTime / predictedTime`
+4. Uses exponential moving average (30% new data, 70% history) for gradual learning
+5. Future ETAs are adjusted by this calibration factor
+
+### Calibration States
+
+| Status | Meaning |
+|--------|---------|
+| **Not calibrated** | No learning data yet |
+| **Learning (N sessions)** | Building calibration (1-4 sessions) |
+| **Calibrated (N sessions)** | Well-calibrated (5+ sessions) |
+
+### Calibration Factor
+
+- `1.0` = Predictions are accurate
+- `1.2` = Predictions were 20% too fast (actual drying takes longer)
+- `0.8` = Predictions were 20% too slow (actual drying is faster)
+
+### Resetting Calibration
+
+To start learning from scratch:
+1. Go to the device page
+2. Click **resetCalibration**
+
+This clears all learning data but keeps your current drying session.
+
+---
+
 ## How the Drying Model Works
 
 The app calculates an "evaporation power" (0-1 scale) based on:
@@ -312,11 +363,12 @@ The app calculates an "evaporation power" (0-1 scale) based on:
 
 ## Tips
 
-1. **Start simple** - Use Open-Meteo first, then add local sensors later
-2. **Calibrate** - Adjust "Drying speed" setting based on your actual results
+1. **Use Mark Dry** - Press "Mark Dry" when laundry is actually dry to improve future predictions
+2. **Start simple** - Use Open-Meteo first, then add local sensors later
 3. **Location matters** - Be accurate about sun exposure for best estimates
 4. **Dashboard tile** - Use `progress` and `etaDisplay` for clean dashboard views
 5. **Automate** - Use motion sensors or buttons to auto-start when you hang laundry
+6. **Give it time** - After 5+ sessions with "Mark Dry", predictions will be well-calibrated
 
 ---
 
@@ -324,6 +376,7 @@ The app calculates an "evaporation power" (0-1 scale) based on:
 
 | Version | Changes |
 |---------|---------|
+| 7.4 | Added learning calibration: "Mark Dry" button learns from actual drying times |
 | 7.3 | Added user-friendly display attributes, custom lat/long support |
 | 7.2 | Added custom location (lat/long) in device preferences |
 | 7.1 | Added dew point support, drying location setting |

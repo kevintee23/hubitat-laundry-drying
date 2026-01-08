@@ -1,5 +1,5 @@
 /**
- * Laundry Drying Progress App v7.3
+ * Laundry Drying Progress App v7.4
  *
  * This app provides device selection dropdowns and manages a virtual device
  * that tracks laundry drying progress.
